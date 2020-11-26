@@ -1,0 +1,8 @@
+#!/bin/bash
+DATE=$(date -u +%Y-%m-%d-%H-%M-%S)Z
+VERSION=$(grep "current_version =" .bumpversion.cfg | sed 's/current_version = //g')
+GITSHA=$(git rev-parse --verify HEAD)
+RELEASE="$VERSION\n$DATE\n$GITSHA"
+TAG=$VERSION
+
+docker build -t adr --build-arg PIP_EXTRA_INDEX_URL=https://foo:4n2sjfkjyfhblovja2q5ynpcq53pgq2t7qhlkaeztceoyqycuvwa@pkgs.dev.azure.com/robinson-labs/book-it-now/_packaging/bookitnow/pypi/simple/ --build-arg RELEASE=$RELEASE .

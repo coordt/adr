@@ -1,0 +1,19 @@
+#!/bin/bash
+docker container prune -f
+
+PWD=`pwd`
+if [[ -e $PWD/.env ]]
+then
+    docker run --rm -ti \
+        -p 3000:3000 \
+        --env-file $PWD/.env \
+        --name adr \
+        adr:latest \
+        "$@"
+else
+    docker run --rm -ti \
+        -p 3000:3000 \
+        --name adr \
+        adr:latest \
+        "$@"
+fi

@@ -1,0 +1,174 @@
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  batch: true
+  branches:
+    include:
+      - 'master'
+  tags:
+    include:
+      - '*'
+
+pr:
+  - master
+
+variables:
+  currentDate: '$(Date:yyyy-MM-dd)T$(Time:hh-mm-ss)Z'
+  pythonVersion: 3.8
+  srcDirectory: adr
+  moduleName: 'bin-adr'
+  registryName: 'datascience/bin-adr'
+  artifactFeed: 'Data and Analytics Partners/ds_feed'
+  feedName: ds_feed
+
+resources:
+  repositories:
+    - repository: deployment_repo
+      type: github
+      endpoint: ch-robinson-internal
+      name: ch-robinson-internal/bin-deployment
+      ref: master
+
+pool: centralus-ds-aks-np
+
+jobs:
+  - job: Test
+    displayName: Run tests
+    steps:
+      - task: UsePythonVersion@0
+        displayName: Use Python $(pythonVersion)
+        inputs:
+          versionSpec: $(pythonVersion)
+
+      - task: PipAuthenticate@1
+        inputs:
+          artifactFeeds: book-it-now/bookitnow
+
+      - script: |
+          python -m pip install --upgrade pip
+          pip install -r requirements/prod.txt -r requirements/test.txt
+          pip install pytest-azurepipelines
+        displayName: 'Install dependencies'
+
+      - bash: flake8
+        displayName: "Linting: flake8"
+        workingDirectory: $(srcDirectory)
+
+      - bash: pytest
+        displayName: Run tests
+
+      - task: PublishTestResults@2
+        inputs:
+          testResultsFiles: '**/results.xml'
+          testRunTitle: '$(Agent.OS) - $(Build.BuildNumber)[$(Agent.JobName)] - Python $(pythonVersion)'
+        condition: succeededOrFailed()
+
+      - task: PublishCodeCoverageResults@1
+        inputs:
+          codeCoverageTool: Cobertura
+          summaryFileLocation: '$(System.DefaultWorkingDirectory)/**/coverage.xml'
+          reportDirectory: '$(System.DefaultWorkingDirectory)/**/htmlcov'
+
+  - job: Build
+    displayName: Build image
+    dependsOn: Test
+    condition: and(succeeded(), startsWith(variables['build.sourceBranch'], 'refs/tags/'))
+    steps:
+      - bash: |
+          VERSION=$(grep "current_version =" .bumpversion.cfg | sed 's/current_version = //g')
+          GITSHA=$(git rev-parse --verify HEAD)
+          RELEASE="$VERSION\n$currentDate\n$GITSHA"
+          TAG=$VERSION
+          echo "VERSION: $VERSION"
+          echo "GITSHA: $GITSHA"
+          echo "RELEASE: $RELEASE"
+          echo "TAG: $TAG"
+          echo "##vso[task.setvariable variable=version]$VERSION"
+          echo "##vso[task.setvariable variable=gitsha]$GITSHA"
+          echo "##vso[task.setvariable variable=release]$RELEASE"
+          echo "##vso[task.setvariable variable=tag]$TAG"
+
+      - task: Docker@2
+        inputs:
+          containerRegistry: 'ArtifactoryDocker'
+          command: 'login'
+
+      - task: Docker@2
+        displayName: Build an image
+        inputs:
+          containerRegistry: 'ArtifactoryDocker'
+          repository: $(registryName)
+          command: 'build'
+          Dockerfile: '**/Dockerfile'
+          tags: |
+            $(tag)
+          arguments: |
+            --build-arg PIP_EXTRA_INDEX_URL=https://foo:lfjhjhsagqyu52gnwz45ymcj7txyon3ocjy66exphtn74qj5pg3a@pkgs.dev.azure.com/CHR-IT/c315fdd5-d819-4596-8c0d-2321e994e252/_packaging/ds_feed/pypi/simple/
+            --build-arg RELEASE=$release
+
+      - task: Docker@2
+        displayName: Push Docker Image
+        inputs:
+          containerRegistry: 'ArtifactoryDocker'
+          repository: $(registryName)
+          command: 'push'
+          tags: |
+            $(tag)
+
+  - job: Deployment
+    displayName: Update deployment repo
+    dependsOn: Build
+    steps:
+      - checkout: self
+        clean: true
+        persistCredentials: true
+        fetchDepth: 1
+
+      - checkout: deployment_repo
+        clean: true
+        persistCredentials: true
+        fetchDepth: 5
+
+      - script: |
+          git config --global user.email "bin-devops@chrobinson.com"
+          git config --global user.name "Automated BIN DevOps"
+          cd $(Agent.BuildDirectory)/s/$(moduleName)
+          TAG=$VERSION
+          DEPLOYMENT_BRANCH="pending-deployment"
+          echo "TAG: $TAG"
+          echo "DEPLOYMENT_BRANCH: $DEPLOYMENT_BRANCH"
+          echo "##vso[task.setvariable variable=tag]$TAG"
+          echo "##vso[task.setvariable variable=deployment_branch]$DEPLOYMENT_BRANCH"
+        displayName: Configuring git
+
+      - script: |
+          cd $(Agent.BuildDirectory)/s/bin-deployment
+          pip install pyyaml
+          git checkout $(deployment_branch) 2>/dev/null || git checkout -b $(deployment_branch)
+          python update_deployment.py $(moduleName) $(tag)
+          git commit -am "Updated $(moduleName) image to $(tag)"
+          git push --set-upstream origin $(deployment_branch)
+        displayName: Creating deployment branch
+
+  - job: Package
+    displayName: Package the module
+    dependsOn: Test
+    condition: and(succeeded(), startsWith(variables['build.sourceBranch'], 'refs/tags/'))
+    steps:
+      - script: |
+          pip install wheel
+          pip install twine m2r
+        displayName: 'Install packaging requirements'
+
+      - script: |
+          python setup.py bdist_wheel
+        displayName: 'Package module'
+
+      - task: TwineAuthenticate@1
+        displayName: 'Authenticate to project PyPI'
+        inputs:
+          artifactFeed: $(artifactFeed)
+
+      - script: |
+          python -m twine upload -r "$(feedName)" --config-file $(PYPIRC_PATH) dist/*.whl
+        displayName: 'Upload to project PyPI'

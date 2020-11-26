@@ -1,0 +1,13 @@
+.*
+**/__pycache__
+**/*.egg-info
+**/*.egg
+**/*.pyc
+**/*.swp
+**/*.log
+**/*.gz
+CONTRIBUTING.rst
+Dockerfile
+Jenkinsfile
+tox.ini
+docs
