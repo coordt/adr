@@ -6,6 +6,4 @@ gitchangelog>=3.0.4
 git-fame~=1.12.2
 pystache~=0.5.4
 Sphinx~=3.1.2
-watchdog~=0.10.3
-keyring
-artifacts-keyring
+watchdog~=0.10.4
